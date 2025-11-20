@@ -2,36 +2,187 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
-# actions-template
-name: "🛠️ Actions Template"
-description: "Description of action"
-# Any relevant notes/observations can go here
+name: 'Upload Assets to GitHub Release'
+description: |
+  Uploads build artefacts and other workflow assets to a GitHub release.
+  Supports glob patterns and can target releases by tag or name.
 
 inputs:
-  input:
-    description: "Description of input"
+  # Mandatory
+  asset_paths:
+    description: |
+      JSON array of asset paths to upload. Supports glob patterns.
+      Example: '["dist/*.tar.gz", "build/*.zip"]'
     required: true
+  # Optional
+  release_tag:
+    description: |
+      Tag of the release to attach assets to.
+      Defaults to the tag from the GitHub execution environment.
+    required: false
+    default: ''
+  release_name:
+    description: |
+      Name of the release to attach assets to.
+      If both tag and name are specified, they must both match.
+    required: false
+    default: ''
 
 outputs:
-  output:
-    description: "Description of output"
-    value: ${{ steps.code.outputs.output }}
+  download_urls:
+    description: 'JSON array of download URLs for the uploaded assets'
+    value: ${{ steps.upload-assets.outputs.download_urls }}
 
 runs:
-  using: "composite"
+  using: 'composite'
   steps:
-    - name: "Friendly Name"
-      id: code
-      shell: bash
-      run: |
-        # Friendly Name
-        input="${{ inputs.input }}"
-        if [ -z "$input" ]; then
-          echo "Error: mandatory input was not set/configured ❌"
-          exit 1
-        fi
+    - name: 'Upload assets to release'
+      id: upload-assets
+      uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+      with:
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+          const glob = require('glob');
 
-        echo "output=$input" >> "$GITHUB_ENV"
-        echo "output=$input" >> "$GITHUB_OUTPUT"
-        echo "Action received: $input ✅"
-        echo "Action received: $input ✅" >> "$GITHUB_STEP_SUMMARY"
+          // Parse inputs
+          const assetPathsInput = `${{ inputs.asset_paths }}`;
+          let assetPaths;
+          try {
+            assetPaths = JSON.parse(assetPathsInput);
+          } catch (error) {
+            core.setFailed(`Failed to parse asset_paths as JSON: ${error.message}`);
+            return;
+          }
+
+          if (!Array.isArray(assetPaths) || assetPaths.length === 0) {
+            core.setFailed('asset_paths must be a non-empty JSON array');
+            return;
+          }
+
+          const releaseTag = `${{ inputs.release_tag }}`.trim();
+          const releaseName = `${{ inputs.release_name }}`.trim();
+
+          // Determine the release tag to use
+          let targetTag = releaseTag;
+          if (!targetTag) {
+            // Extract from github.ref (e.g., refs/tags/v1.0.0)
+            const ref = context.ref;
+            if (ref.startsWith('refs/tags/')) {
+              targetTag = ref.replace('refs/tags/', '');
+            } else {
+              core.setFailed('No release_tag provided and workflow not triggered by tag push');
+              return;
+            }
+          }
+
+          core.info(`Target release tag: ${targetTag}`);
+          if (releaseName) {
+            core.info(`Target release name: ${releaseName}`);
+          }
+
+          // Find the release
+          let release;
+          try {
+            // First try to get release by tag
+            const { data } = await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag: targetTag
+            });
+            release = data;
+            core.info(`Found release by tag: ${release.name} (${release.tag_name})`);
+
+            // Validate release name if provided
+            if (releaseName && release.name !== releaseName) {
+              core.setFailed(
+                `Release name mismatch: found '${release.name}' but expected '${releaseName}'`
+              );
+              return;
+            }
+          } catch (error) {
+            if (error.status === 404) {
+              // If not found by tag and we have a release name, try listing all releases
+              if (releaseName) {
+                core.info(`Release not found by tag, searching by name...`);
+                const { data: releases } = await github.rest.repos.listReleases({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  per_page: 100
+                });
+
+                release = releases.find(r =>
+                  r.name === releaseName && r.tag_name === targetTag
+                );
+
+                if (!release) {
+                  core.setFailed(
+                    `No release found with tag '${targetTag}' and name '${releaseName}'`
+                  );
+                  return;
+                }
+                core.info(`Found release by name: ${release.name} (${release.tag_name})`);
+              } else {
+                core.setFailed(`No release found for tag: ${targetTag}`);
+                return;
+              }
+            } else {
+              throw error;
+            }
+          }
+
+          // Expand glob patterns and collect all files
+          const filesToUpload = [];
+          for (const pattern of assetPaths) {
+            const matches = glob.sync(pattern, { nodir: true });
+            if (matches.length === 0) {
+              core.warning(`No files matched pattern: ${pattern}`);
+            } else {
+              core.info(`Pattern '${pattern}' matched ${matches.length} file(s)`);
+              filesToUpload.push(...matches);
+            }
+          }
+
+          if (filesToUpload.length === 0) {
+            core.setFailed('No files found to upload');
+            return;
+          }
+
+          core.info(`Total files to upload: ${filesToUpload.length}`);
+
+          // Upload each file
+          const downloadUrls = [];
+          for (const filePath of filesToUpload) {
+            const fileName = path.basename(filePath);
+            const fileContent = fs.readFileSync(filePath);
+
+            core.info(`Uploading: ${fileName} (${fileContent.length} bytes)`);
+
+            try {
+              const { data: asset } = await github.rest.repos.uploadReleaseAsset({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release.id,
+                name: fileName,
+                data: fileContent
+              });
+
+              downloadUrls.push(asset.browser_download_url);
+              core.info(`✅ Uploaded: ${fileName}`);
+            } catch (error) {
+              core.error(`Failed to upload ${fileName}: ${error.message}`);
+              throw error;
+            }
+          }
+
+          // Set output
+          core.setOutput('download_urls', JSON.stringify(downloadUrls));
+          core.info(`✅ Successfully uploaded ${downloadUrls.length} asset(s)`);
+
+          // Add to step summary
+          core.summary
+            .addHeading('Release Assets Uploaded', 2)
+            .addRaw(`Release: ${release.name} (${release.tag_name})`, true)
+            .addBreak()
+            .addList(downloadUrls.map(url => `[${path.basename(url)}](${url})`))
+            .write();
