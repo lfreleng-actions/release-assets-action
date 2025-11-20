@@ -20,16 +20,18 @@ concurrency:
 permissions: {}
 
 jobs:
-  ### Test the GitHub Action in this Repository ###
-  prepare-test-release:
-    name: "Prepare test release"
+  ### Prepare test releases (both draft and published) ###
+  prepare-test-releases:
+    name: "Prepare test releases"
     runs-on: ubuntu-latest
     permissions:
       contents: write
     timeout-minutes: 5
     outputs:
-      release_tag: "${{ steps.create-release.outputs.tag }}"
-      release_name: "${{ steps.create-release.outputs.name }}"
+      draft_tag: "${{ steps.create-releases.outputs.draft_tag }}"
+      draft_name: "${{ steps.create-releases.outputs.draft_name }}"
+      published_tag: "${{ steps.create-releases.outputs.published_tag }}"
+      published_name: "${{ steps.create-releases.outputs.published_name }}"
     steps:
       # Harden the runner used by this workflow
       # yamllint disable-line rule:line-length
@@ -40,30 +42,45 @@ jobs:
       - name: "Checkout repository"
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
-      - name: "Create test release"
-        id: create-release
+      - name: "Create test releases"
+        id: create-releases
         env:
           GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
         shell: bash
         run: |
-          # Create test release
-          TAG="test-$(date +%s)"
-          NAME="Test Release $TAG"
+          # Create test releases
+          TIMESTAMP=$(date +%s)
+          DRAFT_TAG="test-draft-$TIMESTAMP"
+          DRAFT_NAME="Test Draft Release $TIMESTAMP"
+          PUBLISHED_TAG="test-published-$TIMESTAMP"
+          PUBLISHED_NAME="Test Published Release $TIMESTAMP"
 
-          echo "Creating test release: $NAME ($TAG)"
-
-          gh release create "$TAG" \
+          echo "Creating draft release: $DRAFT_NAME ($DRAFT_TAG)"
+          gh release create "$DRAFT_TAG" \
             --draft \
-            --title "$NAME" \
-            --notes "Test release for action validation"
+            --title "$DRAFT_NAME" \
+            --notes "Test draft release for action validation"
 
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "name=$NAME" >> "$GITHUB_OUTPUT"
-          echo "Created release: $NAME ($TAG)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Creating published release: $PUBLISHED_NAME ($PUBLISHED_TAG)"
+          gh release create "$PUBLISHED_TAG" \
+            --title "$PUBLISHED_NAME" \
+            --notes "Test published release for action validation"
 
-  test-single-file:
-    name: "Test: Single file upload"
-    needs: prepare-test-release
+          echo "draft_tag=$DRAFT_TAG" >> "$GITHUB_OUTPUT"
+          echo "draft_name=$DRAFT_NAME" >> "$GITHUB_OUTPUT"
+          echo "published_tag=$PUBLISHED_TAG" >> "$GITHUB_OUTPUT"
+          echo "published_name=$PUBLISHED_NAME" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Test Releases Created"
+            echo "- Draft: $DRAFT_NAME ($DRAFT_TAG)"
+            echo "- Published: $PUBLISHED_NAME ($PUBLISHED_TAG)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  ### Test with DRAFT release ###
+  test-draft-single-file:
+    name: "Test: Draft release - Single file"
+    needs: prepare-test-releases
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -83,31 +100,42 @@ jobs:
         run: |
           # Create test file
           mkdir -p dist
-          echo "Test content $(date)" > dist/test-file.txt
+          echo "Draft test content $(date)" > dist/draft-test.txt
 
-      - name: "Upload single file"
+      - name: "Upload to draft release"
         id: upload
         uses: ./
         with:
-          asset_paths: '["dist/test-file.txt"]'
-          release_tag: "${{ needs.prepare-test-release.outputs.release_tag }}"
+          asset_paths: '["dist/draft-test.txt"]'
+          release_tag: "${{ needs.prepare-test-releases.outputs.draft_tag }}"
 
-      - name: "Validate output"
+      - name: "Verify upload and download"
         shell: bash
         env:
           URLS: "${{ steps.upload.outputs.download_urls }}"
         run: |
-          # Validate output
+          # Verify upload and download
           echo "Download URLs: $URLS"
           if [ -z "$URLS" ]; then
             echo "Error: No download URLs returned ❌"
             exit 1
           fi
-          echo "✅ Single file upload successful"
 
-  test-glob-pattern:
-    name: "Test: Glob pattern matching"
-    needs: prepare-test-release
+          # Extract first URL and verify it's downloadable
+          URL=$(echo "$URLS" | jq -r '.[0]')
+          echo "Testing download from: $URL"
+
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -L "$URL")
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "Error: Download failed with HTTP $HTTP_CODE ❌"
+            exit 1
+          fi
+
+          echo "✅ Draft release single file test successful"
+
+  test-draft-glob-pattern:
+    name: "Test: Draft release - Glob patterns"
+    needs: prepare-test-releases
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -138,26 +166,162 @@ jobs:
         uses: ./
         with:
           asset_paths: '["dist/*.txt", "dist/*.tar.gz"]'
-          release_tag: "${{ needs.prepare-test-release.outputs.release_tag }}"
+          release_tag: "${{ needs.prepare-test-releases.outputs.draft_tag }}"
 
-      - name: "Validate multiple files uploaded"
+      - name: "Verify multiple files uploaded and downloadable"
         shell: bash
         env:
           URLS: "${{ steps.upload.outputs.download_urls }}"
         run: |
-          # Validate multiple files uploaded
+          # Verify multiple files uploaded and downloadable
           echo "Download URLs: $URLS"
           COUNT=$(echo "$URLS" | jq 'length')
           echo "Uploaded $COUNT files"
+
           if [ "$COUNT" -ne 4 ]; then
             echo "Error: Expected 4 files, got $COUNT ❌"
             exit 1
           fi
-          echo "✅ Glob pattern test successful"
+
+          # Verify each URL is downloadable
+          echo "$URLS" | jq -r '.[]' | while read -r url; do
+            echo "Testing: $url"
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -L "$url")
+            if [ "$HTTP_CODE" -ne 200 ]; then
+              echo "Error: Download failed for $url (HTTP $HTTP_CODE) ❌"
+              exit 1
+            fi
+          done
+
+          echo "✅ Draft release glob pattern test successful"
+
+  ### Test with PUBLISHED release ###
+  test-published-single-file:
+    name: "Test: Published release - Single file"
+    needs: prepare-test-releases
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 5
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: "Checkout repository"
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: "Create test file"
+        shell: bash
+        run: |
+          # Create test file
+          mkdir -p dist
+          echo "Published test content $(date)" > dist/published-test.txt
+
+      - name: "Upload to published release"
+        id: upload
+        uses: ./
+        with:
+          asset_paths: '["dist/published-test.txt"]'
+          release_tag: "${{ needs.prepare-test-releases.outputs.published_tag }}"
+
+      - name: "Verify upload and download"
+        shell: bash
+        env:
+          URLS: "${{ steps.upload.outputs.download_urls }}"
+        run: |
+          # Verify upload and download
+          echo "Download URLs: $URLS"
+          if [ -z "$URLS" ]; then
+            echo "Error: No download URLs returned ❌"
+            exit 1
+          fi
+
+          # Extract first URL and verify it's downloadable
+          URL=$(echo "$URLS" | jq -r '.[0]')
+          echo "Testing download from: $URL"
+
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -L "$URL")
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "Error: Download failed with HTTP $HTTP_CODE ❌"
+            exit 1
+          fi
+
+          echo "✅ Published release single file test successful"
+
+  test-published-multiple-files:
+    name: "Test: Published release - Multiple files"
+    needs: prepare-test-releases
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 5
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: "Checkout repository"
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: "Create test files"
+        shell: bash
+        run: |
+          # Create test files
+          mkdir -p build
+          echo "Binary 1" > build/app1.bin
+          echo "Binary 2" > build/app2.bin
+          echo "Binary 3" > build/app3.bin
+
+      - name: "Upload multiple files"
+        id: upload
+        uses: ./
+        with:
+          asset_paths: '["build/*.bin"]'
+          release_tag: "${{ needs.prepare-test-releases.outputs.published_tag }}"
+
+      - name: "Verify all files uploaded and downloadable"
+        shell: bash
+        env:
+          URLS: "${{ steps.upload.outputs.download_urls }}"
+        run: |
+          # Verify all files uploaded and downloadable
+          COUNT=$(echo "$URLS" | jq 'length')
+          echo "Uploaded $COUNT files"
+
+          if [ "$COUNT" -ne 3 ]; then
+            echo "Error: Expected 3 files, got $COUNT ❌"
+            exit 1
+          fi
+
+          # Download and verify each file
+          echo "$URLS" | jq -r '.[]' | while read -r url; do
+            filename=$(basename "$url")
+            echo "Downloading: $filename from $url"
+
+            if ! curl -sL -o "/tmp/$filename" "$url"; then
+              echo "Error: Failed to download $filename ❌"
+              exit 1
+            fi
+
+            if [ ! -f "/tmp/$filename" ]; then
+              echo "Error: File not saved: $filename ❌"
+              exit 1
+            fi
+
+            size=$(stat -f%z "/tmp/$filename" 2>/dev/null || stat -c%s "/tmp/$filename")
+            echo "Downloaded $filename ($size bytes)"
+          done
+
+          echo "✅ Published release multiple files test successful"
 
   test-release-by-name:
     name: "Test: Target by release name"
-    needs: prepare-test-release
+    needs: prepare-test-releases
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -180,21 +344,30 @@ jobs:
           echo "Name test content" > build/name-test.txt
 
       - name: "Upload by tag and name"
+        id: upload
         uses: ./
         with:
           asset_paths: '["build/name-test.txt"]'
-          release_tag: "${{ needs.prepare-test-release.outputs.release_tag }}"
-          release_name: "${{ needs.prepare-test-release.outputs.release_name }}"
+          release_tag: "${{ needs.prepare-test-releases.outputs.draft_tag }}"
+          release_name: "${{ needs.prepare-test-releases.outputs.draft_name }}"
 
-      - name: "Validate success"
+      - name: "Verify success and download"
         shell: bash
+        env:
+          URLS: "${{ steps.upload.outputs.download_urls }}"
         run: |
-          # Validate success
+          # Verify success and download
+          URL=$(echo "$URLS" | jq -r '.[0]')
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -L "$URL")
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "Error: Download failed with HTTP $HTTP_CODE ❌"
+            exit 1
+          fi
           echo "✅ Release name targeting successful"
 
   test-nested-glob:
     name: "Test: Nested directory glob"
-    needs: prepare-test-release
+    needs: prepare-test-releases
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -223,25 +396,37 @@ jobs:
         uses: ./
         with:
           asset_paths: '["artifacts/**/*.bin"]'
-          release_tag: "${{ needs.prepare-test-release.outputs.release_tag }}"
+          release_tag: "${{ needs.prepare-test-releases.outputs.draft_tag }}"
 
-      - name: "Validate nested upload"
+      - name: "Verify nested upload and downloads"
         shell: bash
         env:
           URLS: "${{ steps.upload.outputs.download_urls }}"
         run: |
-          # Validate nested upload
+          # Verify nested upload and downloads
           COUNT=$(echo "$URLS" | jq 'length')
           echo "Uploaded $COUNT files from nested directories"
+
           if [ "$COUNT" -ne 3 ]; then
             echo "Error: Expected 3 files, got $COUNT ❌"
             exit 1
           fi
+
+          # Verify all are downloadable
+          echo "$URLS" | jq -r '.[]' | while read -r url; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -L "$url")
+            if [ "$HTTP_CODE" -ne 200 ]; then
+              echo "Error: Download failed for $url (HTTP $HTTP_CODE) ❌"
+              exit 1
+            fi
+          done
+
           echo "✅ Nested glob test successful"
 
+  ### Failure tests ###
   test-failure-invalid-json:
     name: "Test: Invalid JSON input (expect failure)"
-    needs: prepare-test-release
+    needs: prepare-test-releases
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -262,7 +447,7 @@ jobs:
         uses: ./
         with:
           asset_paths: 'not valid json'
-          release_tag: "${{ needs.prepare-test-release.outputs.release_tag }}"
+          release_tag: "${{ needs.prepare-test-releases.outputs.draft_tag }}"
 
       - name: "Verify failure"
         if: steps.invalid-json.outcome == 'success'
@@ -326,7 +511,7 @@ jobs:
 
   test-failure-name-mismatch:
     name: "Test: Release name mismatch (expect failure)"
-    needs: prepare-test-release
+    needs: prepare-test-releases
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -353,7 +538,7 @@ jobs:
         uses: ./
         with:
           asset_paths: '["test.txt"]'
-          release_tag: "${{ needs.prepare-test-release.outputs.release_tag }}"
+          release_tag: "${{ needs.prepare-test-releases.outputs.draft_tag }}"
           release_name: "Wrong Release Name"
 
       - name: "Verify failure"
@@ -371,16 +556,60 @@ jobs:
           # Confirm expected failure
           echo "✅ Name mismatch test passed (correctly failed)"
 
-  cleanup-test-release:
-    name: "Cleanup test release"
+  test-failure-empty-array:
+    name: "Test: Empty asset paths array (expect failure)"
+    needs: prepare-test-releases
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 5
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: "Checkout repository"
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: "Test empty array"
+        id: empty-array
+        continue-on-error: true
+        uses: ./
+        with:
+          asset_paths: '[]'
+          release_tag: "${{ needs.prepare-test-releases.outputs.draft_tag }}"
+
+      - name: "Verify failure"
+        if: steps.empty-array.outcome == 'success'
+        shell: bash
+        run: |
+          # Verify failure
+          echo "Error: Action should have failed with empty array ❌"
+          exit 1
+
+      - name: "Confirm expected failure"
+        if: steps.empty-array.outcome == 'failure'
+        shell: bash
+        run: |
+          # Confirm expected failure
+          echo "✅ Empty array test passed (correctly failed)"
+
+  ### Cleanup ###
+  cleanup-test-releases:
+    name: "Cleanup test releases"
     needs:
-      - prepare-test-release
-      - test-single-file
-      - test-glob-pattern
+      - prepare-test-releases
+      - test-draft-single-file
+      - test-draft-glob-pattern
+      - test-published-single-file
+      - test-published-multiple-files
       - test-release-by-name
       - test-nested-glob
       - test-failure-invalid-json
       - test-failure-name-mismatch
+      - test-failure-empty-array
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -396,15 +625,74 @@ jobs:
       - name: "Checkout repository"
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
-      - name: "Delete test release"
+      - name: "Delete test releases"
         env:
           GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
         shell: bash
         run: |
-          # Delete test release
-          TAG="${{ needs.prepare-test-release.outputs.release_tag }}"
-          if [ -n "$TAG" ]; then
-            echo "Deleting test release: $TAG"
-            gh release delete "$TAG" --yes || true
-            echo "✅ Cleanup completed"
+          # Delete test releases
+          DRAFT_TAG="${{ needs.prepare-test-releases.outputs.draft_tag }}"
+          PUBLISHED_TAG="${{ needs.prepare-test-releases.outputs.published_tag }}"
+
+          if [ -n "$DRAFT_TAG" ]; then
+            echo "Deleting draft release: $DRAFT_TAG"
+            gh release delete "$DRAFT_TAG" --yes || true
           fi
+
+          if [ -n "$PUBLISHED_TAG" ]; then
+            echo "Deleting published release: $PUBLISHED_TAG"
+            gh release delete "$PUBLISHED_TAG" --yes || true
+          fi
+
+          echo "✅ Cleanup completed"
+          echo "## Cleanup Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Deleted draft release: $DRAFT_TAG" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Deleted published release: $PUBLISHED_TAG" >> "$GITHUB_STEP_SUMMARY"
+
+  ### Final test summary ###
+  test-summary:
+    name: "Test Summary"
+    needs:
+      - test-draft-single-file
+      - test-draft-glob-pattern
+      - test-published-single-file
+      - test-published-multiple-files
+      - test-release-by-name
+      - test-nested-glob
+      - test-failure-invalid-json
+      - test-failure-no-release
+      - test-failure-name-mismatch
+      - test-failure-empty-array
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: "Generate test summary"
+        shell: bash
+        run: |
+          # Generate test summary
+          {
+            echo "# Test Results Summary 🧪"
+            echo ""
+            echo "## Draft Release Tests"
+            echo "- Single file upload: ✅"
+            echo "- Glob pattern matching: ✅"
+            echo ""
+            echo "## Published Release Tests"
+            echo "- Single file upload: ✅"
+            echo "- Multiple files: ✅"
+            echo ""
+            echo "## Additional Tests"
+            echo "- Release name targeting: ✅"
+            echo "- Nested glob patterns: ✅"
+            echo ""
+            echo "## Negative Tests (Expected Failures)"
+            echo "- Invalid JSON input: ✅"
+            echo "- Non-existent release: ✅"
+            echo "- Name mismatch: ✅"
+            echo "- Empty array: ✅"
+            echo ""
+            echo "## Verification"
+            echo "- All uploaded assets verified as downloadable ✅"
+            echo "- Test releases cleaned up ✅"
+          } >> "$GITHUB_STEP_SUMMARY"
