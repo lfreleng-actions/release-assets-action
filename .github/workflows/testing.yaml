@@ -21,12 +21,15 @@ permissions: {}
 
 jobs:
   ### Test the GitHub Action in this Repository ###
-  tests:
-    name: "Test local GitHub Action"
+  prepare-test-release:
+    name: "Prepare test release"
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-    timeout-minutes: 10 # Increase this timeout value as needed
+      contents: write
+    timeout-minutes: 5
+    outputs:
+      release_tag: "${{ steps.create-release.outputs.tag }}"
+      release_name: "${{ steps.create-release.outputs.name }}"
     steps:
       # Harden the runner used by this workflow
       # yamllint disable-line rule:line-length
@@ -37,39 +40,371 @@ jobs:
       - name: "Checkout repository"
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
-      # Perform setup prior to running test(s)
-      - name: "Testing setup step"
+      - name: "Create test release"
+        id: create-release
+        env:
+          GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
         shell: bash
         run: |
-          # Testing setup step
-          echo "Testing setup step"
-          echo "Testing setup step/summary output" >> "$GITHUB_STEP_SUMMARY"
+          # Create test release
+          TAG="test-$(date +%s)"
+          NAME="Test Release $TAG"
 
-      - name: "Running local action: ${{ github.repository }}"
-        uses: ./
-        with:
-          input: "test input 💬"
+          echo "Creating test release: $NAME ($TAG)"
 
-      - name: "Validated local action: ${{ github.repository }}"
-        shell: bash
-        run: |
-          # Local action validation
-          echo "Validated local action: ${{ github.repository }}"
-          echo "Validation step summary output" >> "$GITHUB_STEP_SUMMARY"
+          gh release create "$TAG" \
+            --draft \
+            --title "$NAME" \
+            --notes "Test release for action validation"
 
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "Created release: $NAME ($TAG)" >> "$GITHUB_STEP_SUMMARY"
+
+  test-single-file:
+    name: "Test: Single file upload"
+    needs: prepare-test-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 5
+    steps:
+      # Harden the runner used by this workflow
       # yamllint disable-line rule:line-length
-      - name: "Running local action: ${{ github.repository }} [Override Failure]"
-        uses: ./
-        id: failure
-        continue-on-error: true
+      - uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
         with:
-          invalid_input: "Some garbage"
+          egress-policy: audit
 
-      # Failure testing is also important
-      - name: "Error if step above did NOT fail"
-        if: steps.failure.outcome == 'success'
+      - name: "Checkout repository"
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: "Create test file"
         shell: bash
         run: |
-          # Error if step above did NOT fail
-          echo "Error: previous test step did NOT fail ❌"
+          # Create test file
+          mkdir -p dist
+          echo "Test content $(date)" > dist/test-file.txt
+
+      - name: "Upload single file"
+        id: upload
+        uses: ./
+        with:
+          asset_paths: '["dist/test-file.txt"]'
+          release_tag: "${{ needs.prepare-test-release.outputs.release_tag }}"
+
+      - name: "Validate output"
+        shell: bash
+        env:
+          URLS: "${{ steps.upload.outputs.download_urls }}"
+        run: |
+          # Validate output
+          echo "Download URLs: $URLS"
+          if [ -z "$URLS" ]; then
+            echo "Error: No download URLs returned ❌"
+            exit 1
+          fi
+          echo "✅ Single file upload successful"
+
+  test-glob-pattern:
+    name: "Test: Glob pattern matching"
+    needs: prepare-test-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 5
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: "Checkout repository"
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: "Create test files"
+        shell: bash
+        run: |
+          # Create test files
+          mkdir -p dist
+          echo "File 1" > dist/file1.txt
+          echo "File 2" > dist/file2.txt
+          echo "File 3" > dist/file3.log
+          echo "Archive 1" > dist/archive1.tar.gz
+          echo "Archive 2" > dist/archive2.tar.gz
+
+      - name: "Upload with glob pattern"
+        id: upload
+        uses: ./
+        with:
+          asset_paths: '["dist/*.txt", "dist/*.tar.gz"]'
+          release_tag: "${{ needs.prepare-test-release.outputs.release_tag }}"
+
+      - name: "Validate multiple files uploaded"
+        shell: bash
+        env:
+          URLS: "${{ steps.upload.outputs.download_urls }}"
+        run: |
+          # Validate multiple files uploaded
+          echo "Download URLs: $URLS"
+          COUNT=$(echo "$URLS" | jq 'length')
+          echo "Uploaded $COUNT files"
+          if [ "$COUNT" -ne 4 ]; then
+            echo "Error: Expected 4 files, got $COUNT ❌"
+            exit 1
+          fi
+          echo "✅ Glob pattern test successful"
+
+  test-release-by-name:
+    name: "Test: Target by release name"
+    needs: prepare-test-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 5
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: "Checkout repository"
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: "Create test file"
+        shell: bash
+        run: |
+          # Create test file
+          mkdir -p build
+          echo "Name test content" > build/name-test.txt
+
+      - name: "Upload by tag and name"
+        uses: ./
+        with:
+          asset_paths: '["build/name-test.txt"]'
+          release_tag: "${{ needs.prepare-test-release.outputs.release_tag }}"
+          release_name: "${{ needs.prepare-test-release.outputs.release_name }}"
+
+      - name: "Validate success"
+        shell: bash
+        run: |
+          # Validate success
+          echo "✅ Release name targeting successful"
+
+  test-nested-glob:
+    name: "Test: Nested directory glob"
+    needs: prepare-test-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 5
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: "Checkout repository"
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: "Create nested files"
+        shell: bash
+        run: |
+          # Create nested files
+          mkdir -p artifacts/sub1 artifacts/sub2
+          echo "Nested 1" > artifacts/sub1/file.bin
+          echo "Nested 2" > artifacts/sub2/file.bin
+          echo "Root file" > artifacts/root.bin
+
+      - name: "Upload with nested glob"
+        id: upload
+        uses: ./
+        with:
+          asset_paths: '["artifacts/**/*.bin"]'
+          release_tag: "${{ needs.prepare-test-release.outputs.release_tag }}"
+
+      - name: "Validate nested upload"
+        shell: bash
+        env:
+          URLS: "${{ steps.upload.outputs.download_urls }}"
+        run: |
+          # Validate nested upload
+          COUNT=$(echo "$URLS" | jq 'length')
+          echo "Uploaded $COUNT files from nested directories"
+          if [ "$COUNT" -ne 3 ]; then
+            echo "Error: Expected 3 files, got $COUNT ❌"
+            exit 1
+          fi
+          echo "✅ Nested glob test successful"
+
+  test-failure-invalid-json:
+    name: "Test: Invalid JSON input (expect failure)"
+    needs: prepare-test-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 5
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: "Checkout repository"
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: "Test invalid JSON"
+        id: invalid-json
+        continue-on-error: true
+        uses: ./
+        with:
+          asset_paths: 'not valid json'
+          release_tag: "${{ needs.prepare-test-release.outputs.release_tag }}"
+
+      - name: "Verify failure"
+        if: steps.invalid-json.outcome == 'success'
+        shell: bash
+        run: |
+          # Verify failure
+          echo "Error: Action should have failed with invalid JSON ❌"
           exit 1
+
+      - name: "Confirm expected failure"
+        if: steps.invalid-json.outcome == 'failure'
+        shell: bash
+        run: |
+          # Confirm expected failure
+          echo "✅ Invalid JSON test passed (correctly failed)"
+
+  test-failure-no-release:
+    name: "Test: Non-existent release (expect failure)"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 5
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: "Checkout repository"
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: "Create test file"
+        shell: bash
+        run: |
+          # Create test file
+          echo "test" > test.txt
+
+      - name: "Test non-existent release"
+        id: no-release
+        continue-on-error: true
+        uses: ./
+        with:
+          asset_paths: '["test.txt"]'
+          release_tag: "nonexistent-tag-12345"
+
+      - name: "Verify failure"
+        if: steps.no-release.outcome == 'success'
+        shell: bash
+        run: |
+          # Verify failure
+          echo "Error: Action should have failed with non-existent release ❌"
+          exit 1
+
+      - name: "Confirm expected failure"
+        if: steps.no-release.outcome == 'failure'
+        shell: bash
+        run: |
+          # Confirm expected failure
+          echo "✅ Non-existent release test passed (correctly failed)"
+
+  test-failure-name-mismatch:
+    name: "Test: Release name mismatch (expect failure)"
+    needs: prepare-test-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 5
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: "Checkout repository"
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: "Create test file"
+        shell: bash
+        run: |
+          # Create test file
+          echo "test" > test.txt
+
+      - name: "Test name mismatch"
+        id: name-mismatch
+        continue-on-error: true
+        uses: ./
+        with:
+          asset_paths: '["test.txt"]'
+          release_tag: "${{ needs.prepare-test-release.outputs.release_tag }}"
+          release_name: "Wrong Release Name"
+
+      - name: "Verify failure"
+        if: steps.name-mismatch.outcome == 'success'
+        shell: bash
+        run: |
+          # Verify failure
+          echo "Error: Action should have failed with name mismatch ❌"
+          exit 1
+
+      - name: "Confirm expected failure"
+        if: steps.name-mismatch.outcome == 'failure'
+        shell: bash
+        run: |
+          # Confirm expected failure
+          echo "✅ Name mismatch test passed (correctly failed)"
+
+  cleanup-test-release:
+    name: "Cleanup test release"
+    needs:
+      - prepare-test-release
+      - test-single-file
+      - test-glob-pattern
+      - test-release-by-name
+      - test-nested-glob
+      - test-failure-invalid-json
+      - test-failure-name-mismatch
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 5
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: "Checkout repository"
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: "Delete test release"
+        env:
+          GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        shell: bash
+        run: |
+          # Delete test release
+          TAG="${{ needs.prepare-test-release.outputs.release_tag }}"
+          if [ -n "$TAG" ]; then
+            echo "Deleting test release: $TAG"
+            gh release delete "$TAG" --yes || true
+            echo "✅ Cleanup completed"
+          fi
