@@ -82,6 +82,16 @@ repos:
       - id: markdownlint
         args: ["--fix"]
 
+  - repo: https://github.com/pre-commit/mirrors-eslint
+    rev: 6b0a6fbdd14ed9625d6475c2523f325db6f6637a  # frozen: v9.39.1
+    hooks:
+      - id: eslint
+        files: \.(js|jsx)$
+        types: [file]
+        args: ["--fix"]
+        additional_dependencies:
+          - eslint@8.57.0
+
   - repo: https://github.com/fsfe/reuse-tool
     rev: 9fabf9eb815a57aac116b435e8346c200cdb8604  # frozen: v6.2.0
     hooks:
