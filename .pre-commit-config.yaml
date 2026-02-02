@@ -83,7 +83,7 @@ repos:
         args: ["--fix"]
 
   - repo: https://github.com/pre-commit/mirrors-eslint
-    rev: 03c6ec1045a8c9430833c96cacf6982db6f5d899  # frozen: v10.0.0-rc.1
+    rev: 7d8c5a29d69ae7d9b5c418d39b7c19845ea4cb7b  # frozen: v10.0.0-rc.2
     hooks:
       - id: eslint
         files: \.(js|jsx)$
