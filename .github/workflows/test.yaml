@@ -10,12 +10,18 @@ on:
 
 permissions: {}
 
+# Serialise runs; never cancel an in-flight test run, so the
+# cleanup job always removes the test releases/tags it created.
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: false
+
 jobs:
   test:
     name: "Quick test"
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write  # Create test releases and tags via the GitHub API
     timeout-minutes: 5
     steps:
       # yamllint disable rule:line-length
@@ -25,6 +31,8 @@ jobs:
 
        # yamllint disable rule:line-length
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: "Create release and artifact"
         id: setup
@@ -37,11 +45,10 @@ jobs:
           TAG="release-$DATE"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-          # Create tag first, then draft release
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "$TAG"
-          git push origin "$TAG"
+          # Create tag first (via API; checkout has no credentials),
+          # then draft release
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA"
 
           # Wait a moment for tag to be available
           sleep 2
@@ -60,16 +67,19 @@ jobs:
       - name: "List releases and tags"
         env:
           GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+          RELEASE_TAG: "${{ steps.setup.outputs.tag }}"
         shell: bash
         run: |
           echo "Listing all releases:"
           gh release list --limit 10
           echo ""
           echo "Listing all tags:"
-          git tag --list "release-*" "second-release-*"
+          gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/" \
+            --jq '.[].ref' | sed 's|refs/tags/||' | \
+            grep -E '^(release-|second-release-)' || true
           echo ""
-          echo "Trying to view release with tag: ${{ steps.setup.outputs.tag }}"
-          gh release view "${{ steps.setup.outputs.tag }}" || echo "Release not found via gh CLI"
+          echo "Trying to view release with tag: $RELEASE_TAG"
+          gh release view "$RELEASE_TAG" || echo "Release not found via gh CLI"
 
       - name: "Upload single artifact [using release tag]"
         uses: ./
@@ -97,9 +107,10 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "name=$RELEASE" >> "$GITHUB_OUTPUT"
 
-          # Create tag first, then draft release
-          git tag "$TAG"
-          git push origin "$TAG"
+          # Create tag first (via API; checkout has no credentials),
+          # then draft release
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA"
 
           # Wait a moment for tag to be available
           sleep 2
@@ -132,7 +143,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write  # Delete test releases and tags
     timeout-minutes: 2
     steps:
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
@@ -140,30 +151,34 @@ jobs:
           egress-policy: audit
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: "Delete test releases"
         env:
           GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+          REPO: ${{ github.repository }}
         shell: bash
         run: |
           echo "Cleaning up test releases..."
-          gh release list --limit 50 --repo "${{ github.repository }}" --json tagName --jq '.[] | select(.tagName | test("^(release-|second-release-)")) | .tagName' | \
+          gh release list --limit 50 --repo "$REPO" --json tagName \
+            --jq '.[] | select(.tagName | test("^(release-|second-release-)")) | .tagName' | \
             while read -r tag; do
               echo "Deleting release: $tag"
-              gh release delete "$tag" --yes --cleanup-tag --repo "${{ github.repository }}" || true
+              gh release delete "$tag" --yes --cleanup-tag --repo "$REPO" || true
             done
 
           echo ""
           echo "Cleaning up any remaining test tags..."
-          gh api repos/${{ github.repository }}/git/matching-refs/tags/release- \
+          gh api "repos/$REPO/git/matching-refs/tags/release-" \
             --jq '.[].ref' | sed 's|refs/tags/||' | while read -r tag; do
             echo "Deleting tag: $tag"
-            gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/$tag" 2>/dev/null || echo "Tag $tag already deleted"
+            gh api -X DELETE "repos/$REPO/git/refs/tags/$tag" 2>/dev/null || echo "Tag $tag already deleted"
           done
-          gh api repos/${{ github.repository }}/git/matching-refs/tags/second-release- \
+          gh api "repos/$REPO/git/matching-refs/tags/second-release-" \
             --jq '.[].ref' | sed 's|refs/tags/||' | while read -r tag; do
             echo "Deleting tag: $tag"
-            gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/$tag" 2>/dev/null || echo "Tag $tag already deleted"
+            gh api -X DELETE "repos/$REPO/git/refs/tags/$tag" 2>/dev/null || echo "Tag $tag already deleted"
           done
 
           echo "✅ Cleanup complete"

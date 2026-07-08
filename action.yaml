@@ -49,7 +49,7 @@ runs:
       with:
         # yamllint disable rule:line-length
         script: |
-          const script = require('${{ github.action_path }}/scripts/upload-assets.js');
+          const script = require(`${process.env.ACTION_PATH}/scripts/upload-assets.js`);
           await script({
             github,
             context,
@@ -61,6 +61,7 @@ runs:
             denyOverwrite: process.env.DENY_OVERWRITE
           });
       env:
+        ACTION_PATH: ${{ github.action_path }}
         ASSET_PATHS: ${{ inputs.asset_paths }}
         RELEASE_TAG: ${{ inputs.release_tag }}
         RELEASE_NAME: ${{ inputs.release_name }}
