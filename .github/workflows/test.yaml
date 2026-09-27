@@ -82,13 +82,13 @@ jobs:
           gh release view "$RELEASE_TAG" || echo "Release not found via gh CLI"
 
       - name: "Upload single artifact [using release tag]"
-        uses: ./
+        uses: $/
         with:
           asset_paths: '["artifact-01.txt"]'
           release_tag: "${{ steps.setup.outputs.tag }}"
 
       - name: "Upload artifacts with glob [using release tag]"
-        uses: ./
+        uses: $/
         with:
           asset_paths: '["artifact-*.txt"]'
           release_tag: "${{ steps.setup.outputs.tag }}"
@@ -124,13 +124,13 @@ jobs:
           }
 
       - name: "Upload single artifact [using release name only]"
-        uses: ./
+        uses: $/
         with:
           asset_paths: '["artifact-01.txt"]'
           release_name: "${{ steps.setup2.outputs.name }}"
 
       - name: "Upload artifacts with glob [using release name]"
-        uses: ./
+        uses: $/
         with:
           asset_paths: '["artifact-*.txt"]'
           release_tag: "${{ steps.setup2.outputs.tag }}"
