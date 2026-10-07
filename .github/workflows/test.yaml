@@ -2,13 +2,21 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
-name: "Manual Test 🧪"
+name: "Integration Tests 🧪"
 
 # yamllint disable-line rule:truthy
 on:
   workflow_dispatch:
+  push:
+    branches: ["main"]
 
 permissions: {}
+
+# Every tag and release this workflow creates starts with this prefix,
+# unique to the run attempt. Cleanup deletes only refs matching it, so
+# it can never touch a legitimate tag or another run's test releases.
+env:
+  TEST_PREFIX: "integration-test-${{ github.run_id }}-${{ github.run_attempt }}"
 
 # Serialise runs; never cancel an in-flight test run, so the
 # cleanup job always removes the test releases/tags it created.
@@ -41,19 +49,22 @@ jobs:
         shell: bash
         run: |
           # Create build artifacts
-          DATE="$(date +%Y-%m-%d-%H%M)"
-          TAG="release-$DATE"
+          TAG="$TEST_PREFIX-release"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
           # Create tag first (via API; checkout has no credentials),
-          # then draft release
+          # then draft release. Tags created with GITHUB_TOKEN do not
+          # trigger release.yaml. The release is a prerelease so that
+          # Release Drafter, which also runs on push to main and only
+          # updates non-prerelease drafts, never adopts it.
           gh api "repos/$GITHUB_REPOSITORY/git/refs" \
             -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA"
 
           # Wait a moment for tag to be available
           sleep 2
 
-          gh release create "$TAG" --draft --title "$TAG" --notes "Test"
+          gh release create "$TAG" --draft --prerelease --title "$TAG" \
+            --notes "Test"
 
           # Verify release was created
           gh release view "$TAG" || {
@@ -61,8 +72,8 @@ jobs:
             exit 1
           }
 
-          echo "$DATE" > artifact-01.txt
-          echo "$DATE" > artifact-02.txt
+          echo "$TAG" > artifact-01.txt
+          echo "$TAG" > artifact-02.txt
 
       - name: "List releases and tags"
         env:
@@ -73,10 +84,9 @@ jobs:
           echo "Listing all releases:"
           gh release list --limit 10
           echo ""
-          echo "Listing all tags:"
-          gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/" \
-            --jq '.[].ref' | sed 's|refs/tags/||' | \
-            grep -E '^(release-|second-release-)' || true
+          echo "Listing test tags for this run:"
+          gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$TEST_PREFIX-" \
+            --jq '.[].ref' | sed 's|refs/tags/||'
           echo ""
           echo "Trying to view release with tag: $RELEASE_TAG"
           gh release view "$RELEASE_TAG" || echo "Release not found via gh CLI"
@@ -101,21 +111,21 @@ jobs:
         shell: bash
         run: |
           # Create second release with tag
-          DATE="$(date +%Y-%m-%d-%H%M)"
-          TAG="second-release-$DATE"
-          RELEASE="Second Release $DATE"
+          TAG="$TEST_PREFIX-second-release"
+          RELEASE="Second Release $TEST_PREFIX"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "name=$RELEASE" >> "$GITHUB_OUTPUT"
 
           # Create tag first (via API; checkout has no credentials),
-          # then draft release
+          # then draft prerelease (see the first release step)
           gh api "repos/$GITHUB_REPOSITORY/git/refs" \
             -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA"
 
           # Wait a moment for tag to be available
           sleep 2
 
-          gh release create "$TAG" --draft --title "$RELEASE" --notes "Test"
+          gh release create "$TAG" --draft --prerelease \
+            --title "$RELEASE" --notes "Test"
 
           # Verify release was created
           gh release view "$TAG" || {
@@ -129,7 +139,7 @@ jobs:
           asset_paths: '["artifact-01.txt"]'
           release_name: "${{ steps.setup2.outputs.name }}"
 
-      - name: "Upload artifacts with glob [using release name]"
+      - name: "Upload artifacts with glob [using release tag and name]"
         uses: $/
         with:
           asset_paths: '["artifact-*.txt"]'
@@ -160,23 +170,13 @@ jobs:
           REPO: ${{ github.repository }}
         shell: bash
         run: |
-          echo "Cleaning up test releases..."
-          gh release list --limit 50 --repo "$REPO" --json tagName \
-            --jq '.[] | select(.tagName | test("^(release-|second-release-)")) | .tagName' | \
-            while read -r tag; do
-              echo "Deleting release: $tag"
-              gh release delete "$tag" --yes --cleanup-tag --repo "$REPO" || true
-            done
-
-          echo ""
-          echo "Cleaning up any remaining test tags..."
-          gh api "repos/$REPO/git/matching-refs/tags/release-" \
+          # Each test release is created after its tag, so this run's
+          # tags reach every release it made
+          echo "Cleaning up test releases and tags: $TEST_PREFIX-*"
+          gh api "repos/$REPO/git/matching-refs/tags/$TEST_PREFIX-" \
             --jq '.[].ref' | sed 's|refs/tags/||' | while read -r tag; do
-            echo "Deleting tag: $tag"
-            gh api -X DELETE "repos/$REPO/git/refs/tags/$tag" 2>/dev/null || echo "Tag $tag already deleted"
-          done
-          gh api "repos/$REPO/git/matching-refs/tags/second-release-" \
-            --jq '.[].ref' | sed 's|refs/tags/||' | while read -r tag; do
+            echo "Deleting release: $tag"
+            gh release delete "$tag" --yes --cleanup-tag --repo "$REPO" || true
             echo "Deleting tag: $tag"
             gh api -X DELETE "repos/$REPO/git/refs/tags/$tag" 2>/dev/null || echo "Tag $tag already deleted"
           done
