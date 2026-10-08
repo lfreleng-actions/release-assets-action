@@ -28,7 +28,6 @@ jobs:
   ### PR-safe validation (no write permissions needed) ###
   validate-pr:
     name: "Validate action (PR-safe)"
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read  # Checkout repository for validation
@@ -77,28 +76,24 @@ jobs:
       - name: "Validate script syntax"
         shell: bash
         run: |
-          # Extract and validate JavaScript syntax
-          echo "Checking for common script issues..."
-
-          # Check for duplicate declarations
-          if grep -n "const glob = require('glob')" action.yaml; then
-            echo "Error: Found duplicate glob declaration ❌"
-            echo "github-script provides glob as built-in"
-            exit 1
-          fi
-
-          echo "✅ No obvious script syntax issues found"
+          # Parse each script the action loads, without executing it
+          echo "Checking JavaScript syntax..."
+          for script in scripts/*.js; do
+            node --check "$script"
+            echo "✅ $script"
+          done
 
       - name: "Summary"
         shell: bash
         run: |
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          ## ✅ PR Validation Passed
+          ## ✅ Validation Passed
 
           The following checks passed:
           - action.yaml syntax validation
           - Required action fields present
           - Script syntax checks
 
-          **Note:** Full integration tests will run after merge.
+          **Note:** Integration tests run on push to main, in the
+          "Integration Tests 🧪" workflow.
           EOF
