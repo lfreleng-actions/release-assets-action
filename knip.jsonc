@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: 2026 The Linux Foundation
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": ["scripts/upload-assets.js"],
+  "project": ["scripts/**/*.js", "*.config.mjs"],
+  "ignoreBinaries": ["eslint"],
+  "ignoreDependencies": ["eslint"]
+}
