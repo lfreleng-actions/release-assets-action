@@ -25,6 +25,26 @@ concurrency:
 permissions: {}
 
 jobs:
+  upload-assets-tests:
+    name: "Test upload-assets.js"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      # yamllint disable rule:line-length
+      - uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c  # v2.23.0
+        with:
+          egress-policy: audit
+
+      - name: "Checkout repository"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # yamllint enable rule:line-length
+
+      - name: "Run unit tests"
+        run: npm test
   ### PR-safe validation (no write permissions needed) ###
   validate-pr:
     name: "Validate action (PR-safe)"
