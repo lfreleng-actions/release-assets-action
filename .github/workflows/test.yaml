@@ -17,6 +17,9 @@ permissions: {}
 # it can never touch a legitimate tag or another run's test releases.
 env:
   TEST_PREFIX: "integration-test-${{ github.run_id }}-${{ github.run_attempt }}"
+  # Turn off GitHub CLI telemetry: steps below run 'gh', which
+  # otherwise posts usage events to cafe.github.com.
+  GH_TELEMETRY: "false"
 
 # Serialise runs; never cancel an in-flight test run, so the
 # cleanup job always removes the test releases/tags it created.
