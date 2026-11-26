@@ -14,8 +14,19 @@
  * @param {string} params.releaseTag - Release tag to target
  * @param {string} params.releaseName - Release name to target (optional)
  * @param {boolean|string} params.denyOverwrite - Prevent overwriting existing assets (optional, default: 'true')
+ * @param {function(number): Promise<void>} params.sleep - Delay function for retry waits (optional)
  */
-module.exports = async ({ github, context, core, glob, assetPathsInput, releaseTag, releaseName, denyOverwrite }) => {
+module.exports = async ({
+  github,
+  context,
+  core,
+  glob,
+  assetPathsInput,
+  releaseTag,
+  releaseName,
+  denyOverwrite,
+  sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
+}) => {
   const fs = require('fs');
   const path = require('path');
 
@@ -108,59 +119,71 @@ module.exports = async ({ github, context, core, glob, assetPathsInput, releaseT
   if (!release && (targetTag || trimmedReleaseName)) {
     core.info('Searching all releases (including drafts)...');
 
-    // Paginate through all releases to find the matching one
     const MAX_PAGES = 100; // Search up to 10,000 releases
-    let page = 1;
+    const RETRY_DELAYS = [1000, 2000, 4000, 8000];
+    for (let attempt = 0; !release; attempt++) {
+      let page = 1;
 
-    while (!release && page <= MAX_PAGES) {
-      const { data: releases } = await github.rest.repos.listReleases({
-        owner: context.repo.owner,
-        repo: context.repo.repo,
-        per_page: 100,
-        page: page
-      });
+      while (!release && page <= MAX_PAGES) {
+        const { data: releases } = await github.rest.repos.listReleases({
+          owner: context.repo.owner,
+          repo: context.repo.repo,
+          per_page: 100,
+          page: page
+        });
 
-      // Match based on what we have:
-      // - Tag + Name: match both
-      // - Tag only: match tag
-      // - Name only: match name
-      release = releases.find(r => {
-        if (targetTag && trimmedReleaseName) {
-          return r.tag_name === targetTag && r.name === trimmedReleaseName;
-        } else if (targetTag) {
-          return r.tag_name === targetTag;
-        } else {
-          return r.name === trimmedReleaseName;
+        // Match based on what we have:
+        // - Tag + Name: match both
+        // - Tag only: match tag
+        // - Name only: match name
+        release = releases.find(r => {
+          if (targetTag && trimmedReleaseName) {
+            return r.tag_name === targetTag && r.name === trimmedReleaseName;
+          } else if (targetTag) {
+            return r.tag_name === targetTag;
+          } else {
+            return r.name === trimmedReleaseName;
+          }
+        });
+
+        if (release) {
+          if (targetTag && trimmedReleaseName) {
+            core.info(
+              `Found release by tag and name: ${release.name} (${release.tag_name})`
+            );
+          } else if (targetTag) {
+            core.info(
+              `Found release by tag: ${release.name} (${release.tag_name})`
+            );
+          } else {
+            core.info(
+              `Found release by name: ${release.name} (${release.tag_name})`
+            );
+          }
+          break;
         }
-      });
 
-      if (release) {
-        if (targetTag && trimmedReleaseName) {
-          core.info(
-            `Found release by tag and name: ${release.name} (${release.tag_name})`
-          );
-        } else if (targetTag) {
-          core.info(
-            `Found release by tag: ${release.name} (${release.tag_name})`
-          );
-        } else {
-          core.info(
-            `Found release by name: ${release.name} (${release.tag_name})`
-          );
+        // No more releases to check
+        if (releases.length === 0) {
+          break;
         }
-        break;
+
+        page++;
       }
 
-      // No more releases to check
-      if (releases.length === 0) {
-        break;
+      if (!release && page > MAX_PAGES) {
+        core.warning(`Stopped searching after ${MAX_PAGES} pages (10,000 releases). Release may exist but was not found.`);
       }
 
-      page++;
-    }
-
-    if (!release && page > MAX_PAGES) {
-      core.warning(`Stopped searching after ${MAX_PAGES} pages (10,000 releases). Release may exist but was not found.`);
+      if (!release && attempt < RETRY_DELAYS.length) {
+        const delay = RETRY_DELAYS[attempt];
+        core.info(
+          `Release search retry ${attempt + 1}/${RETRY_DELAYS.length} in ${delay / 1000} seconds`
+        );
+        await sleep(delay);
+      } else {
+        break;
+      }
     }
 
     if (!release) {
